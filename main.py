@@ -11,10 +11,9 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 3900
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
 
-# Gemini API 초기화 (가볍고 빠른 Flash 모델 사용)
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = None
 
 
 def validate_required_env():
@@ -55,6 +54,39 @@ def split_text(text, max_length=TELEGRAM_MAX_MESSAGE_LENGTH):
     chunks.append(current_chunk)
 
   return chunks
+
+
+def initialize_gemini_model():
+  """사용 가능한 Gemini 모델 중 generateContent 지원 모델을 선택합니다."""
+  global model
+
+  genai.configure(api_key=GEMINI_API_KEY)
+
+  available = []
+  for item in genai.list_models():
+    methods = getattr(item, "supported_generation_methods", []) or []
+    if "generateContent" in methods:
+      available.append(item.name.replace("models/", ""))
+
+  if not available:
+    raise RuntimeError("generateContent를 지원하는 Gemini 모델을 찾지 못했습니다.")
+
+  if GEMINI_MODEL in available:
+    selected = GEMINI_MODEL
+  else:
+    preferred_order = [
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-1.5-pro",
+    ]
+    selected = next((name for name in preferred_order if name in available), None)
+    if not selected:
+      flash_candidates = [name for name in available if "flash" in name]
+      selected = flash_candidates[0] if flash_candidates else available[0]
+
+  model = genai.GenerativeModel(selected)
+  print(f"- Gemini 모델 선택: {selected}")
 
 
 def get_rss_news():
@@ -138,17 +170,18 @@ def send_telegram_message(text):
         response.raise_for_status()
 
 if __name__ == "__main__":
-    try:
-        validate_required_env()
+  try:
+    validate_required_env()
+    initialize_gemini_model()
 
-        print("1. RSS 뉴스 수집 시작...")
-        raw_news = get_rss_news()
+    print("1. RSS 뉴스 수집 시작...")
+    raw_news = get_rss_news()
 
-        print("2. LLM 요약 리포트 생성 중...")
-        curated_message = generate_curation_report(raw_news)
+    print("2. LLM 요약 리포트 생성 중...")
+    curated_message = generate_curation_report(raw_news)
 
-        print("3. 텔레그램 전송 중...")
-        send_telegram_message(curated_message)
-        print("✅ 완료!")
-    except Exception as exc:
-        print(f"❌ 실패: {exc}")
+    print("3. 텔레그램 전송 중...")
+    send_telegram_message(curated_message)
+    print("✅ 완료!")
+  except Exception as exc:
+    print(f"❌ 실패: {exc}")
