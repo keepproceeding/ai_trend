@@ -7,6 +7,7 @@ from tavily import TavilyClient
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 TAVILY_API_KEY = os.environ.get('TAVILY_API_KEY')
+print(TAVILY_API_KEY)  # API 키가 제대로 로드되었는지 확인
 # GEMINI_API_KEY는 genai.Client()에서 자동으로 인식합니다.
 
 # 2. 클라이언트 초기화
