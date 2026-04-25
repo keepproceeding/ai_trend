@@ -7,11 +7,10 @@ from tavily import TavilyClient
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 TAVILY_API_KEY = os.environ.get('TAVILY_API_KEY')
-print(TAVILY_API_KEY)  # API 키가 제대로 로드되었는지 확인
-# GEMINI_API_KEY는 genai.Client()에서 자동으로 인식합니다.
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')  # genai.Client()가 자동으로 인식하지만 명시적으로도 가져옵니다.
 
 # 2. 클라이언트 초기화
-client = genai.Client()
+client = genai.Client(api_key=GEMINI_API_KEY)
 tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
 def get_tavily_news():
@@ -76,7 +75,7 @@ def generate_curation_report(news_data):
     """
     
     response = client.models.generate_content(
-        model='gemini-1.5-flash', 
+        model='gemini-2.5-flash', 
         contents=prompt,
     )
     return response.text
