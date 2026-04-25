@@ -1,93 +1,15 @@
 import os
 import requests
 import feedparser
-import google.generativeai as genai
+from google import genai
 
-REQUEST_TIMEOUT_SECONDS = 10
-MAX_ENTRIES_PER_FEED = 3
-TELEGRAM_MAX_MESSAGE_LENGTH = 3900
-
-# 1. 환경 변수 설정
+# 1. 환경 변수 세팅 (GitHub Secrets에서 가져옴)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash')
+# 주의: GEMINI_API_KEY는 os.environ에 등록되어 있으면 genai.Client()가 자동으로 읽어옵니다.
 
-model = None
-
-
-def validate_required_env():
-  """필수 환경 변수가 모두 설정되었는지 확인합니다."""
-  required = {
-    "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
-    "CHAT_ID": CHAT_ID,
-    "GEMINI_API_KEY": GEMINI_API_KEY,
-  }
-  missing = [key for key, value in required.items() if not value]
-  if missing:
-    raise ValueError(f"필수 환경 변수가 없습니다: {', '.join(missing)}")
-
-
-def split_text(text, max_length=TELEGRAM_MAX_MESSAGE_LENGTH):
-  """텔레그램 제한을 넘지 않도록 텍스트를 줄 단위로 분할합니다."""
-  if len(text) <= max_length:
-    return [text]
-
-  chunks = []
-  current_chunk = ""
-
-  for line in text.splitlines(keepends=True):
-    if len(current_chunk) + len(line) <= max_length:
-      current_chunk += line
-      continue
-
-    if current_chunk:
-      chunks.append(current_chunk)
-      current_chunk = ""
-
-    while len(line) > max_length:
-      chunks.append(line[:max_length])
-      line = line[max_length:]
-    current_chunk = line
-
-  if current_chunk:
-    chunks.append(current_chunk)
-
-  return chunks
-
-
-def initialize_gemini_model():
-  """사용 가능한 Gemini 모델 중 generateContent 지원 모델을 선택합니다."""
-  global model
-
-  genai.configure(api_key=GEMINI_API_KEY)
-
-  available = []
-  for item in genai.list_models():
-    methods = getattr(item, "supported_generation_methods", []) or []
-    if "generateContent" in methods:
-      available.append(item.name.replace("models/", ""))
-
-  if not available:
-    raise RuntimeError("generateContent를 지원하는 Gemini 모델을 찾지 못했습니다.")
-
-  if GEMINI_MODEL in available:
-    selected = GEMINI_MODEL
-  else:
-    preferred_order = [
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
-      "gemini-1.5-pro",
-    ]
-    selected = next((name for name in preferred_order if name in available), None)
-    if not selected:
-      flash_candidates = [name for name in available if "flash" in name]
-      selected = flash_candidates[0] if flash_candidates else available[0]
-
-  model = genai.GenerativeModel(selected)
-  print(f"- Gemini 모델 선택: {selected}")
-
+# 2. 최신 SDK 클라이언트 초기화
+client = genai.Client()
 
 def get_rss_news():
     """커뮤니티 RSS 피드에서 최신 트렌드를 수집합니다."""
@@ -101,28 +23,24 @@ def get_rss_news():
     collected_news = []
     
     for source, url in feeds.items():
-        # User-Agent를 설정해야 Reddit 등에서 차단하지 않습니다.
-        headers = {'User-Agent': 'Mozilla/5.0 (compatible; AITrendBot/1.0)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         try:
-            response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-            response.raise_for_status()
+            response = requests.get(url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
-        except requests.RequestException as exc:
-            print(f"- RSS 수집 실패 ({source}): {exc}")
+            
+            # 소스별 상위 3개 기사만 추출
+            for entry in feed.entries[:3]:
+                title = entry.title
+                link = entry.link
+                collected_news.append(f"[{source}] {title}\nLink: {link}")
+        except Exception as e:
+            print(f"[{source}] RSS 수집 에러: {e}")
             continue
-        
-        # 소스별 상위 3개 기사만 추출
-        for entry in feed.entries[:MAX_ENTRIES_PER_FEED]:
-            title = getattr(entry, "title", "제목 없음")
-            link = getattr(entry, "link", "링크 없음")
-            collected_news.append(f"[{source}] {title}\nLink: {link}")
             
     return "\n\n".join(collected_news)
 
 def generate_curation_report(news_data):
-    """수집된 뉴스를 바탕으로 LLM에게 요약 및 인사이트 템플릿 작성을 요청합니다."""
-    if not news_data.strip():
-        return "오늘은 수집된 뉴스가 없어 리포트를 생성하지 못했습니다."
+    """수집된 뉴스를 바탕으로 최신 Gemini API를 호출하여 리포트를 작성합니다."""
     
     prompt = f"""
     너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM이야.
@@ -143,7 +61,7 @@ def generate_curation_report(news_data):
     - [기사 제목](기사 링크)
       └ 💬 코멘트: (내용...)
 
-    🛠️ **[2. AI, IT 테크니컬 이슈]**
+    🛠️ **[2. AI, IT 테크니컬 업데이트 사항]**
     - [기사 제목](기사 링크)
       └ 💬 코멘트: (엔지니어링/기술적 한계점이나 돌파구 1줄)
     - [기사 제목](기사 링크)
@@ -153,35 +71,36 @@ def generate_curation_report(news_data):
     - (오늘의 동향을 종합했을 때, 향후 AI 플랫폼 기획 및 인프라 도입 시 고려해야 할 점이나 너의 통찰력 있는 생각 1~2문단)
     """
     
-    response = model.generate_content(prompt)
+    # 🌟 최신 SDK의 generate_content 호출 방식
+    response = client.models.generate_content(
+        model='gemini-1.5-flash', 
+        contents=prompt,
+    )
+    
     return response.text
 
 def send_telegram_message(text):
-    """텔레그램으로 plain text 메시지를 전송합니다."""
+    """텔레그램으로 마크다운 포맷의 메시지를 전송합니다."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
-    # 길이가 너무 길면 실패하므로 텔레그램 정책(4096자)보다 작게 분할 전송
-    for chunk in split_text(text):
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": chunk,
-        }
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
+    payload = {
+        "chat_id": CHAT_ID, 
+        "text": text, 
+        "parse_mode": "Markdown" 
+    }
+    response = requests.post(url, json=payload)
+    response.raise_for_status()
 
 if __name__ == "__main__":
-  try:
-    validate_required_env()
-    initialize_gemini_model()
-
     print("1. RSS 뉴스 수집 시작...")
     raw_news = get_rss_news()
-
+    
+    if not raw_news.strip():
+        print("수집된 뉴스가 없습니다. 프로세스를 종료합니다.")
+        exit()
+        
     print("2. LLM 요약 리포트 생성 중...")
     curated_message = generate_curation_report(raw_news)
-
+    
     print("3. 텔레그램 전송 중...")
     send_telegram_message(curated_message)
     print("✅ 완료!")
-  except Exception as exc:
-    print(f"❌ 실패: {exc}")
