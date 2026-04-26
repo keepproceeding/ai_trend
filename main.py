@@ -79,6 +79,20 @@ def is_pinpoint_update(title, content):
     has_low_signal = any(keyword in (title or "").lower() for keyword in LOW_SIGNAL_TITLE_KEYWORDS)
     return has_high_signal and not has_low_signal
 
+
+def normalize_release_date(value):
+    if not value:
+        return "날짜 미상"
+
+    text = str(value).strip()
+    if not text:
+        return "날짜 미상"
+
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+
+    return text
+
 def get_tavily_news():
     """Tavily API를 활용하여 최근 24시간의 '발표/릴리즈/업데이트' 중심 뉴스를 수집합니다."""
 
@@ -139,6 +153,9 @@ def get_tavily_news():
                 title = result.get('title')
                 url = result.get('url')
                 content = result.get('content')
+                release_date = normalize_release_date(
+                    result.get('published_date') or result.get('published_at') or result.get('date')
+                )
 
                 if not url or url in seen_urls:
                     continue
@@ -148,7 +165,9 @@ def get_tavily_news():
                     continue
 
                 seen_urls.add(url)
-                collected_data.append(f"제목: {title}\n링크: {url}\n본문 요약: {content}\n")
+                collected_data.append(
+                    f"제목: {title}\n릴리즈 날짜: {release_date}\n링크: {url}\n본문 요약: {content}\n"
+                )
                 
             print(f"✅ Tavily 검색 완료: '{q}'")
         except Exception as e:
@@ -162,8 +181,8 @@ def generate_curation_report(news_data):
     today = datetime.now().strftime("%Y-%m-%d")
 
     prompt = f"""
-너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM이야.
-아래는 Tavily 검색엔진을 통해 수집된 데일리 AI/IT 트렌드 원문 데이터야.
+너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM 및 AI 엔지니어야.
+아래는 Tavily 검색엔진을 통해 수집된 데일리 AI/IT 발표,이슈,릴리즈,업데이트 원문 데이터야.
 이 내용들을 분석해서 반드시 JSON 객체 하나만 출력해.
 
 [수집된 데이터]
@@ -174,16 +193,23 @@ def generate_curation_report(news_data):
 - 설명 문장 없이 JSON만 출력.
 - 데이터가 부족하면 빈 배열 [] 사용.
 - 기사 항목은 '발표/릴리즈/업데이트' 등 핀포인트 정보 위주로 선택.
+- 각 기사에는 릴리즈 날짜를 반드시 넣고, 확인되지 않으면 "날짜 미상"으로 표기.
+- 각 기사 설명은 '코멘트'가 아니라 핵심 요약 1줄(summary_one_line)만 작성.
+- agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
 [JSON 스키마]
 {{
   "date": "{today}",
   "headline_summary": ["문장1", "문장2"],
-  "business_trends": [
-    {{"title": "", "url": "", "comment": ""}}
+    "market_pulse": {{
+        "level": "hot 또는 quiet",
+        "reason": "판단 근거 1문장"
+    }},
+  "business_updates": [
+        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
   ],
   "technical_updates": [
-    {{"title": "", "url": "", "comment": ""}}
+        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
   ],
   "agent_insight": ["문단1", "문단2"]
 }}
@@ -219,7 +245,8 @@ def build_html_report(report):
     # 모델이 날짜를 임의로 바꾸지 않도록 실행 시점의 날짜를 강제 사용
     date = html.escape(datetime.now().strftime("%Y-%m-%d"))
     summary = report.get("headline_summary", []) or []
-    business = report.get("business_trends", []) or []
+    market_pulse = report.get("market_pulse", {}) or {}
+    business = report.get("business_updates", []) or []
     technical = report.get("technical_updates", []) or []
     insights = report.get("agent_insight", []) or []
 
@@ -235,41 +262,52 @@ def build_html_report(report):
     else:
         lines.append("• 오늘은 유의미한 핀포인트 업데이트가 제한적입니다.")
 
-    lines.extend(["", "<b>📈 1. AI 비즈니스 & 플랫폼 트렌드</b>"])
+    lines.extend(["", "<b>📈 1. AI 비즈니스 & 플랫폼 발표, 이슈, 업데이트 사항</b>"])
 
     if business:
         for item in business[:6]:
             title = html.escape(str(item.get("title", "제목 없음")))
+            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
             url = str(item.get("url", "")).strip()
-            comment = html.escape(str(item.get("comment", "코멘트 없음")))
+            summary_one_line = html.escape(str(item.get("summary_one_line", "핵심 요약 없음")))
 
             if url.startswith("http://") or url.startswith("https://"):
                 safe_url = html.escape(url, quote=True)
                 lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
             else:
                 lines.append(f"• {title}")
-            lines.append(f"└ 코멘트: {comment}")
+            lines.append(f"└ 릴리즈 날짜: {release_date}")
+            lines.append(f"└ 핵심 요약: {summary_one_line}")
+            lines.append("")
     else:
         lines.append("• 수집된 비즈니스 업데이트가 없습니다.")
 
-    lines.extend(["", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 동향</b>"])
+    lines.extend(["", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 발표, 이슈, 업데이트 사항</b>"])
 
     if technical:
         for item in technical[:6]:
             title = html.escape(str(item.get("title", "제목 없음")))
+            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
             url = str(item.get("url", "")).strip()
-            comment = html.escape(str(item.get("comment", "코멘트 없음")))
+            summary_one_line = html.escape(str(item.get("summary_one_line", "핵심 요약 없음")))
 
             if url.startswith("http://") or url.startswith("https://"):
                 safe_url = html.escape(url, quote=True)
                 lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
             else:
                 lines.append(f"• {title}")
-            lines.append(f"└ 코멘트: {comment}")
+            lines.append(f"└ 릴리즈 날짜: {release_date}")
+            lines.append(f"└ 핵심 요약: {summary_one_line}")
+            lines.append("")
     else:
         lines.append("• 수집된 테크니컬 업데이트가 없습니다.")
 
     lines.extend(["", "<b>💡 에이전트의 인사이트</b>"])
+    pulse_level = html.escape(str(market_pulse.get("level", "unknown")))
+    pulse_reason = html.escape(str(market_pulse.get("reason", "판단 근거 없음")))
+    lines.append(f"• 오늘의 온도: {pulse_level}")
+    lines.append(f"• 판단 근거: {pulse_reason}")
+    lines.append("")
     if insights:
         for paragraph in insights[:2]:
             lines.append(html.escape(str(paragraph)))
