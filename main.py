@@ -1,4 +1,8 @@
 import os
+import re
+import html
+import json
+from datetime import datetime
 import requests
 from google import genai
 from tavily import TavilyClient
@@ -153,53 +157,171 @@ def get_tavily_news():
     return "\n---\n".join(collected_data)
 
 def generate_curation_report(news_data):
-    """수집된 뉴스를 바탕으로 Gemini 1.5 Flash가 리포트를 작성합니다."""
-    
+    """수집된 뉴스를 바탕으로 Gemini가 구조화된 JSON 리포트를 생성합니다."""
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
     prompt = f"""
-    너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM이야.
-    아래는 오늘 Tavily AI 검색엔진을 통해 수집된 데일리 AI/IT 트렌드 원문 데이터야.
-    이 내용들을 분석해서 텔레그램 메신저에 맞게 가독성 좋은 보고서를 작성해줘.
+너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM이야.
+아래는 Tavily 검색엔진을 통해 수집된 데일리 AI/IT 트렌드 원문 데이터야.
+이 내용들을 분석해서 반드시 JSON 객체 하나만 출력해.
 
-    [수집된 데이터]
-    {news_data}
+[수집된 데이터]
+{news_data}
 
-        [출력 템플릿 규정]
-        - 반드시 한국어로 작성.
-        - 텔레그램 HTML parse_mode에 맞는 태그만 사용: <b>, <i>, <a>, <code>, <br>
-        - 마크다운 문법(**, __, [], ())은 절대 사용하지 말 것.
-        - 섹션 제목은 <b>태그</b>로 강조하고, 섹션 사이에는 빈 줄 1개를 둘 것.
-        - 각 기사 항목은 아래 형식으로 작성:
-            • <a href="기사링크">기사 제목</a><br>
-                └ 코멘트: 한 줄 요약
+[중요 규칙]
+- 마크다운, HTML 태그, 코드블록 금지.
+- 설명 문장 없이 JSON만 출력.
+- 데이터가 부족하면 빈 배열 [] 사용.
+- 기사 항목은 '발표/릴리즈/업데이트' 등 핀포인트 정보 위주로 선택.
 
-        [출력 예시 형식]
-        <b>🔥 오늘의 AI 핵심 요약</b><br>
-        핵심 요약 2~3줄<br>
-        <br>
-        <b>📈 1. AI 비즈니스 & 플랫폼 트렌드</b><br>
-        • <a href="https://example.com">기사 제목</a><br>
-        └ 코멘트: PM 관점의 전략적 의미 1줄<br>
-        <br>
-        <b>🛠️ 2. 테크니컬 이슈 & 오픈소스 동향</b><br>
-        • <a href="https://example.com">기사 제목</a><br>
-        └ 코멘트: 엔지니어링 시사점 1줄<br>
-        <br>
-        <b>💡 에이전트의 인사이트</b><br>
-        오늘의 동향 종합 인사이트 1~2문단
-    """
-    
+[JSON 스키마]
+{{
+  "date": "{today}",
+  "headline_summary": ["문장1", "문장2"],
+  "business_trends": [
+    {{"title": "", "url": "", "comment": ""}}
+  ],
+  "technical_updates": [
+    {{"title": "", "url": "", "comment": ""}}
+  ],
+  "agent_insight": ["문단1", "문단2"]
+}}
+"""
+
     response = client.models.generate_content(
         model='gemini-2.5-flash', 
         contents=prompt,
     )
     return response.text
 
+
+def extract_json_object(text):
+    """모델 응답에서 JSON 객체를 안전하게 추출합니다."""
+    cleaned = text.strip()
+
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+
+    if first_brace == -1 or last_brace == -1 or first_brace >= last_brace:
+        raise ValueError("Gemini 응답에서 JSON 객체를 찾지 못했습니다.")
+
+    json_text = cleaned[first_brace:last_brace + 1]
+    return json.loads(json_text)
+
+
+def build_html_report(report):
+    """구조화된 리포트 JSON을 Telegram 안전 HTML 메시지로 렌더링합니다."""
+    date = html.escape(str(report.get("date", datetime.now().strftime("%Y-%m-%d"))))
+    summary = report.get("headline_summary", []) or []
+    business = report.get("business_trends", []) or []
+    technical = report.get("technical_updates", []) or []
+    insights = report.get("agent_insight", []) or []
+
+    lines = [
+        f"<b>📰 AI 테크 데일리 | {date}</b>",
+        "<br>",
+        "<b>🔥 오늘의 AI 핵심 요약</b>",
+    ]
+
+    if summary:
+        for item in summary[:3]:
+            lines.append(f"• {html.escape(str(item))}")
+    else:
+        lines.append("• 오늘은 유의미한 핀포인트 업데이트가 제한적입니다.")
+
+    lines.extend(["<br>", "<b>📈 1. AI 비즈니스 & 플랫폼 트렌드</b>"])
+
+    if business:
+        for item in business[:6]:
+            title = html.escape(str(item.get("title", "제목 없음")))
+            url = str(item.get("url", "")).strip()
+            comment = html.escape(str(item.get("comment", "코멘트 없음")))
+
+            if url.startswith("http://") or url.startswith("https://"):
+                safe_url = html.escape(url, quote=True)
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+            else:
+                lines.append(f"• {title}")
+            lines.append(f"└ 코멘트: {comment}")
+    else:
+        lines.append("• 수집된 비즈니스 업데이트가 없습니다.")
+
+    lines.extend(["<br>", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 동향</b>"])
+
+    if technical:
+        for item in technical[:6]:
+            title = html.escape(str(item.get("title", "제목 없음")))
+            url = str(item.get("url", "")).strip()
+            comment = html.escape(str(item.get("comment", "코멘트 없음")))
+
+            if url.startswith("http://") or url.startswith("https://"):
+                safe_url = html.escape(url, quote=True)
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+            else:
+                lines.append(f"• {title}")
+            lines.append(f"└ 코멘트: {comment}")
+    else:
+        lines.append("• 수집된 테크니컬 업데이트가 없습니다.")
+
+    lines.extend(["<br>", "<b>💡 에이전트의 인사이트</b>"])
+    if insights:
+        for paragraph in insights[:2]:
+            lines.append(html.escape(str(paragraph)))
+            lines.append("<br>")
+    else:
+        lines.append("오늘은 발표/릴리즈 중심으로 추적된 업데이트를 바탕으로 제한된 인사이트만 도출되었습니다.")
+
+    return "<br>".join(lines)
+
 def send_telegram_message(text):
     """텔레그램으로 HTML 포맷의 메시지를 전송합니다."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    # Telegram은 메시지 길이 제한(4096자)이 있어 안전하게 분할 전송합니다.
-    chunks = [text[i:i + MAX_TELEGRAM_LENGTH] for i in range(0, len(text), MAX_TELEGRAM_LENGTH)]
+    def normalize_html_message(value):
+        normalized = value.replace("\r\n", "\n")
+        normalized = normalized.replace("<br/>", "<br>").replace("<br />", "<br>")
+        return normalized
+
+    def split_message_by_lines(value, max_length):
+        lines = value.split("\n")
+        chunks = []
+        current = ""
+
+        for line in lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) <= max_length:
+                current = candidate
+                continue
+
+            if current:
+                chunks.append(current)
+
+            # 단일 라인이 너무 긴 경우 강제로 쪼개되, 가능한 태그 경계 근처에서 분할
+            while len(line) > max_length:
+                split_at = line.rfind(" ", 0, max_length)
+                if split_at == -1:
+                    split_at = max_length
+                chunks.append(line[:split_at])
+                line = line[split_at:].lstrip()
+
+            current = line
+
+        if current:
+            chunks.append(current)
+
+        return chunks
+
+    def strip_html_tags(value):
+        text_only = re.sub(r"<[^>]+>", "", value)
+        return html.unescape(text_only)
+
+    safe_text = normalize_html_message(text)
+    chunks = split_message_by_lines(safe_text, MAX_TELEGRAM_LENGTH)
 
     for chunk in chunks:
         payload = {
@@ -209,6 +331,19 @@ def send_telegram_message(text):
             "disable_web_page_preview": False,
         }
         response = requests.post(url, json=payload)
+
+        # HTML 파싱 실패(400) 시 태그를 제거한 일반 텍스트로 재시도
+        if response.status_code == 400:
+            print(f"⚠️ Telegram HTML 전송 실패, fallback 적용: {response.text}")
+            fallback_payload = {
+                "chat_id": CHAT_ID,
+                "text": strip_html_tags(chunk),
+                "disable_web_page_preview": False,
+            }
+            fallback_response = requests.post(url, json=fallback_payload)
+            fallback_response.raise_for_status()
+            continue
+
         response.raise_for_status()
 
 if __name__ == "__main__":
@@ -220,7 +355,14 @@ if __name__ == "__main__":
         exit()
         
     print("2. Gemini 요약 리포트 생성 중...")
-    curated_message = generate_curation_report(raw_news)
+    raw_model_output = generate_curation_report(raw_news)
+
+    try:
+        report_json = extract_json_object(raw_model_output)
+        curated_message = build_html_report(report_json)
+    except Exception as e:
+        print(f"⚠️ JSON 파싱 실패, 원문 텍스트 fallback 사용: {e}")
+        curated_message = raw_model_output
     
     print("3. 텔레그램 전송 중...")
     send_telegram_message(curated_message)
