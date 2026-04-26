@@ -216,7 +216,8 @@ def extract_json_object(text):
 
 def build_html_report(report):
     """구조화된 리포트 JSON을 Telegram 안전 HTML 메시지로 렌더링합니다."""
-    date = html.escape(str(report.get("date", datetime.now().strftime("%Y-%m-%d"))))
+    # 모델이 날짜를 임의로 바꾸지 않도록 실행 시점의 날짜를 강제 사용
+    date = html.escape(datetime.now().strftime("%Y-%m-%d"))
     summary = report.get("headline_summary", []) or []
     business = report.get("business_trends", []) or []
     technical = report.get("technical_updates", []) or []
@@ -224,7 +225,7 @@ def build_html_report(report):
 
     lines = [
         f"<b>📰 AI 테크 데일리 | {date}</b>",
-        "<br>",
+        "",
         "<b>🔥 오늘의 AI 핵심 요약</b>",
     ]
 
@@ -234,7 +235,7 @@ def build_html_report(report):
     else:
         lines.append("• 오늘은 유의미한 핀포인트 업데이트가 제한적입니다.")
 
-    lines.extend(["<br>", "<b>📈 1. AI 비즈니스 & 플랫폼 트렌드</b>"])
+    lines.extend(["", "<b>📈 1. AI 비즈니스 & 플랫폼 트렌드</b>"])
 
     if business:
         for item in business[:6]:
@@ -251,7 +252,7 @@ def build_html_report(report):
     else:
         lines.append("• 수집된 비즈니스 업데이트가 없습니다.")
 
-    lines.extend(["<br>", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 동향</b>"])
+    lines.extend(["", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 동향</b>"])
 
     if technical:
         for item in technical[:6]:
@@ -268,15 +269,16 @@ def build_html_report(report):
     else:
         lines.append("• 수집된 테크니컬 업데이트가 없습니다.")
 
-    lines.extend(["<br>", "<b>💡 에이전트의 인사이트</b>"])
+    lines.extend(["", "<b>💡 에이전트의 인사이트</b>"])
     if insights:
         for paragraph in insights[:2]:
             lines.append(html.escape(str(paragraph)))
-            lines.append("<br>")
+            lines.append("")
     else:
         lines.append("오늘은 발표/릴리즈 중심으로 추적된 업데이트를 바탕으로 제한된 인사이트만 도출되었습니다.")
 
-    return "<br>".join(lines)
+    # HTML parse_mode에서도 줄바꿈(\n)이 렌더링되므로 분할 안정성을 위해 실제 줄바꿈을 사용
+    return "\n".join(lines).strip()
 
 def send_telegram_message(text):
     """텔레그램으로 HTML 포맷의 메시지를 전송합니다."""
@@ -317,7 +319,8 @@ def send_telegram_message(text):
         return chunks
 
     def strip_html_tags(value):
-        text_only = re.sub(r"<[^>]+>", "", value)
+        text_with_newlines = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+        text_only = re.sub(r"<[^>]+>", "", text_with_newlines)
         return html.unescape(text_only)
 
     safe_text = normalize_html_message(text)
