@@ -20,6 +20,24 @@ RSS_FEEDS = [
     ("technical", "LlamaIndex", "https://www.llamaindex.ai/blog/rss.xml"),
 ]
 
+GOOGLE_NEWS_RSS_FEEDS = [
+    (
+        "business",
+        "Google News RSS",
+        "https://news.google.com/rss/search?q=((OpenAI+OR+Anthropic+OR+Google+DeepMind+OR+Mistral)+AND+(announced+OR+launch+OR+launched+OR+released+OR+debuted+OR+unveiled))+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "business",
+        "Google News RSS",
+        "https://news.google.com/rss/search?q=((GPT+OR+Claude+OR+Gemini+OR+Llama+OR+Mistral)+AND+(API+update+OR+model+update+OR+preview+OR+GA+OR+general+availability+OR+release+notes))+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "technical",
+        "Google News RSS",
+        "https://news.google.com/rss/search?q=((LangChain+OR+LlamaIndex+OR+AutoGen+OR+CrewAI+OR+DSPy+OR+vLLM+OR+Ollama)+AND+(release+OR+released+OR+changelog+OR+version+OR+%22release+notes%22+OR+open-source))+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ),
+]
+
 GITHUB_RELEASE_REPOS = [
     ("technical", "langchain-ai/langchain"),
     ("technical", "run-llama/llama_index"),
@@ -234,6 +252,44 @@ def collect_rss_news():
     return items
 
 
+def collect_google_news_rss():
+    items = []
+
+    for category, source, feed_url in GOOGLE_NEWS_RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                release_date = parse_datetime_to_date(
+                    entry.get("published") or entry.get("updated") or entry.get("pubDate")
+                )
+                url = entry.get("link", "")
+                summary = entry.get("summary", "") or entry.get("description", "")
+
+                item = normalize_item(
+                    category=category,
+                    source=source,
+                    title=entry.get("title", ""),
+                    url=url,
+                    summary=summary,
+                    release_date=release_date,
+                )
+
+                if not item["url"] or is_noisy_domain(item["url"]):
+                    continue
+                if not is_recent_release_date(item["release_date"]):
+                    continue
+                if not is_pinpoint_update(item["title"], item["summary"]):
+                    continue
+
+                items.append(item)
+
+            print(f"✅ Google News RSS 수집 완료: {category}")
+        except Exception as e:
+            print(f"❌ Google News RSS 수집 에러 ({category}): {e}")
+
+    return items
+
+
 def collect_github_releases():
     items = []
     headers = {"Accept": "application/vnd.github+json"}
@@ -316,10 +372,11 @@ def format_news_items(items):
 
 
 def get_hybrid_news():
-    """RSS + GitHub Releases를 조합해 최근 발표/릴리즈 소스를 수집합니다."""
+    """공식 RSS + GitHub Releases + Google News RSS를 조합해 최근 발표/릴리즈 소스를 수집합니다."""
     all_items = []
     all_items.extend(collect_rss_news())
     all_items.extend(collect_github_releases())
+    all_items.extend(collect_google_news_rss())
     return format_news_items(all_items)
 
 def generate_curation_report(news_data):
@@ -329,7 +386,7 @@ def generate_curation_report(news_data):
 
     prompt = f"""
 너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM 및 AI 엔지니어야.
-아래는 공식 RSS와 GitHub Releases를 통해 수집된 데일리 AI/IT 발표, 이슈, 릴리즈, 업데이트 원문 데이터야.
+아래는 공식 RSS, GitHub Releases, Google News RSS를 통해 수집된 데일리 AI/IT 발표, 이슈, 릴리즈, 업데이트 원문 데이터야.
 이 내용들을 분석해서 반드시 JSON 객체 하나만 출력해.
 
 [수집된 데이터]
@@ -537,7 +594,7 @@ def send_telegram_message(text):
         response.raise_for_status()
 
 if __name__ == "__main__":
-    print("1. RSS + GitHub Releases 뉴스 수집 시작...")
+    print("1. 공식 RSS + GitHub Releases + Google News RSS 수집 시작...")
     raw_news = get_hybrid_news()
     
     if not raw_news.strip():
