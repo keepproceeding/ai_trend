@@ -2,12 +2,13 @@ import os
 import re
 import html
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from google import genai
 from tavily import TavilyClient
 
 MAX_TELEGRAM_LENGTH = 4096
+RECENT_DAYS = 7
 
 NOISY_DOMAINS = {
     "instagram.com",
@@ -93,8 +94,22 @@ def normalize_release_date(value):
 
     return text
 
+
+def is_recent_release_date(value):
+    if not value or value == "날짜 미상":
+        return False
+
+    try:
+        release_date = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+
+    today = datetime.now().date()
+    earliest_allowed = today - timedelta(days=RECENT_DAYS)
+    return earliest_allowed <= release_date <= today
+
 def get_tavily_news():
-    """Tavily API를 활용하여 최근 24시간의 '발표/릴리즈/업데이트' 중심 뉴스를 수집합니다."""
+    """Tavily API를 활용하여 최근 7일의 '발표/릴리즈/업데이트' 중심 뉴스만 수집합니다."""
 
     # 두루뭉술한 거시 트렌드 대신 '오늘 공개/발표/업데이트' 중심 쿼리로 제한
     query_configs = [
@@ -144,7 +159,7 @@ def get_tavily_news():
                 query=q,
                 search_depth="advanced",
                 topic="news",
-                days=1,
+                days=RECENT_DAYS,
                 max_results=8,
                 include_domains=config["include_domains"],
             )
@@ -162,6 +177,8 @@ def get_tavily_news():
                 if is_noisy_domain(url):
                     continue
                 if not is_pinpoint_update(title, content):
+                    continue
+                if not is_recent_release_date(release_date):
                     continue
 
                 seen_urls.add(url)
@@ -193,7 +210,9 @@ def generate_curation_report(news_data):
 - 설명 문장 없이 JSON만 출력.
 - 데이터가 부족하면 빈 배열 [] 사용.
 - 기사 항목은 '발표/릴리즈/업데이트' 등 핀포인트 정보 위주로 선택.
-- 각 기사에는 릴리즈 날짜를 반드시 넣고, 확인되지 않으면 "날짜 미상"으로 표기.
+- 입력 데이터에 있는 날짜만 사용하고, 모델이 제품의 과거 최초 출시일이나 임의 날짜를 추론해서 쓰면 안 됨.
+- 각 기사에는 입력에 포함된 릴리즈 날짜를 그대로 넣고, 최근 {RECENT_DAYS}일 이내 항목만 사용.
+- 날짜가 없거나 최근 {RECENT_DAYS}일을 벗어나는 항목은 JSON에 포함하지 말 것.
 - 각 기사 설명은 '코멘트'가 아니라 핵심 요약 1줄(summary_one_line)만 작성.
 - agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
