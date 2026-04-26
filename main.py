@@ -17,6 +17,7 @@ RSS_FEEDS = [
     ("business", "Google DeepMind", "https://deepmind.google/blog/rss.xml"),
     ("business", "Hugging Face", "https://huggingface.co/blog/feed.xml"),
     ("technical", "LangChain", "https://blog.langchain.dev/rss/"),
+    ("technical", "LangGraph", "https://blog.langchain.dev/rss/"),
     ("technical", "LlamaIndex", "https://www.llamaindex.ai/blog/rss.xml"),
 ]
 
@@ -34,12 +35,13 @@ GOOGLE_NEWS_RSS_FEEDS = [
     (
         "technical",
         "Google News RSS",
-        "https://news.google.com/rss/search?q=((LangChain+OR+LlamaIndex+OR+AutoGen+OR+CrewAI+OR+DSPy+OR+vLLM+OR+Ollama)+AND+(release+OR+released+OR+changelog+OR+version+OR+%22release+notes%22+OR+open-source))+when:7d&hl=en-US&gl=US&ceid=US:en",
+        "https://news.google.com/rss/search?q=((LangChain+OR+LangGraph+OR+LlamaIndex+OR+AutoGen+OR+CrewAI+OR+DSPy+OR+vLLM+OR+Ollama)+AND+(feature+OR+capability+OR+evaluation+OR+benchmark+OR+agent+OR+release+OR+released+OR+launch+OR+%22release+notes%22))+when:7d&hl=en-US&gl=US&ceid=US:en",
     ),
 ]
 
 GITHUB_RELEASE_REPOS = [
     ("technical", "langchain-ai/langchain"),
+    ("technical", "langchain-ai/langgraph"),
     ("technical", "run-llama/llama_index"),
     ("technical", "microsoft/autogen"),
     ("technical", "crewAIInc/crewAI"),
@@ -54,6 +56,7 @@ SOURCE_PRIORITY = {
     "Google DeepMind": 0,
     "Hugging Face": 0,
     "LangChain": 0,
+    "LangGraph": 0,
     "LlamaIndex": 0,
 }
 
@@ -98,9 +101,51 @@ HIGH_SIGNAL_KEYWORDS = {
     "v3",
     "api update",
     "new model",
+    "new feature",
+    "new capability",
+    "agent",
+    "evaluation",
+    "benchmark",
+    "observability",
+    "tool calling",
+    "workflow",
     "introduced",
     "introduces",
     "introducing",
+}
+
+LOW_SIGNAL_TECHNICAL_KEYWORDS = {
+    "bug fix",
+    "bugfix",
+    "fixes",
+    "minor fix",
+    "patch release",
+    "dependency bump",
+    "version bump",
+    "typo",
+    "docs only",
+    "internal cleanup",
+    "refactor",
+}
+
+HIGH_SIGNAL_TECHNICAL_KEYWORDS = {
+    "new feature",
+    "feature",
+    "capability",
+    "agent",
+    "evaluation",
+    "eval",
+    "benchmark",
+    "observability",
+    "tool calling",
+    "workflow",
+    "runtime",
+    "sdk",
+    "framework",
+    "library",
+    "launch",
+    "release notes",
+    "open-source",
 }
 
 # 1. 환경 변수 세팅
@@ -124,6 +169,13 @@ def is_pinpoint_update(title, content):
     text = f"{title or ''} {content or ''}".lower()
     has_high_signal = any(keyword in text for keyword in HIGH_SIGNAL_KEYWORDS)
     has_low_signal = any(keyword in (title or "").lower() for keyword in LOW_SIGNAL_TITLE_KEYWORDS)
+    return has_high_signal and not has_low_signal
+
+
+def is_major_technical_update(title, content):
+    text = f"{title or ''} {content or ''}".lower()
+    has_high_signal = any(keyword in text for keyword in HIGH_SIGNAL_TECHNICAL_KEYWORDS)
+    has_low_signal = any(keyword in text for keyword in LOW_SIGNAL_TECHNICAL_KEYWORDS)
     return has_high_signal and not has_low_signal
 
 
@@ -242,6 +294,8 @@ def collect_rss_news():
                     continue
                 if not is_pinpoint_update(item["title"], item["summary"]):
                     continue
+                if item["category"] == "technical" and not is_major_technical_update(item["title"], item["summary"]):
+                    continue
 
                 items.append(item)
 
@@ -279,6 +333,8 @@ def collect_google_news_rss():
                 if not is_recent_release_date(item["release_date"]):
                     continue
                 if not is_pinpoint_update(item["title"], item["summary"]):
+                    continue
+                if item["category"] == "technical" and not is_major_technical_update(item["title"], item["summary"]):
                     continue
 
                 items.append(item)
@@ -320,6 +376,8 @@ def collect_github_releases():
                 if not is_recent_release_date(item["release_date"]):
                     continue
                 if not is_pinpoint_update(item["title"], item["summary"]):
+                    continue
+                if item["category"] == "technical" and not is_major_technical_update(item["title"], item["summary"]):
                     continue
 
                 items.append(item)
@@ -401,6 +459,8 @@ def generate_curation_report(news_data):
 - 각 기사에는 입력에 포함된 릴리즈 날짜를 그대로 넣고, 최근 {RECENT_DAYS}일 이내 항목만 사용.
 - 날짜가 없거나 최근 {RECENT_DAYS}일을 벗어나는 항목은 JSON에 포함하지 말 것.
 - 각 기사 설명은 '코멘트'가 아니라 핵심 요약 1줄(summary_one_line)만 작성.
+- 테크니컬 업데이트는 단순 버그 수정, 마이너 패치, 내부 리팩터링보다 새로운 기능, 에이전트 기능, 평가 방식, 벤치마크, 주요 라이브러리/서비스 업데이트를 우선 선택.
+- LangChain뿐 아니라 LangGraph, 에이전트 오케스트레이션, 에이전트 평가/observability 관련 업데이트가 있으면 우선 반영.
 - agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
 [JSON 스키마]
@@ -509,9 +569,11 @@ def build_html_report(report):
         lines.append("• 수집된 테크니컬 업데이트가 없습니다.")
 
     lines.extend(["", "<b>💡 에이전트의 인사이트</b>"])
+    pulse_raw = str(market_pulse.get("level", "unknown")).strip().lower()
+    pulse_emoji = "🔥" if pulse_raw == "hot" else "🌿" if pulse_raw == "quiet" else "📊"
     pulse_level = html.escape(str(market_pulse.get("level", "unknown")))
     pulse_reason = html.escape(str(market_pulse.get("reason", "판단 근거 없음")))
-    lines.append(f"• 오늘의 온도: {pulse_level}")
+    lines.append(f"• 오늘의 온도: {pulse_emoji} {pulse_level}")
     lines.append(f"• 판단 근거: {pulse_reason}")
     lines.append("")
     if insights:
