@@ -4,11 +4,40 @@ import html
 import json
 from datetime import datetime, timedelta
 import requests
+import feedparser
 from google import genai
-from tavily import TavilyClient
 
 MAX_TELEGRAM_LENGTH = 4096
 RECENT_DAYS = 7
+REQUEST_TIMEOUT = 20
+
+RSS_FEEDS = [
+    ("business", "OpenAI", "https://openai.com/news/rss.xml"),
+    ("business", "Anthropic", "https://www.anthropic.com/news/rss.xml"),
+    ("business", "Google DeepMind", "https://deepmind.google/blog/rss.xml"),
+    ("business", "Hugging Face", "https://huggingface.co/blog/feed.xml"),
+    ("technical", "LangChain", "https://blog.langchain.dev/rss/"),
+    ("technical", "LlamaIndex", "https://www.llamaindex.ai/blog/rss.xml"),
+]
+
+GITHUB_RELEASE_REPOS = [
+    ("technical", "langchain-ai/langchain"),
+    ("technical", "run-llama/llama_index"),
+    ("technical", "microsoft/autogen"),
+    ("technical", "crewAIInc/crewAI"),
+    ("technical", "stanfordnlp/dspy"),
+    ("technical", "vllm-project/vllm"),
+    ("technical", "ollama/ollama"),
+]
+
+SOURCE_PRIORITY = {
+    "OpenAI": 0,
+    "Anthropic": 0,
+    "Google DeepMind": 0,
+    "Hugging Face": 0,
+    "LangChain": 0,
+    "LlamaIndex": 0,
+}
 
 NOISY_DOMAINS = {
     "instagram.com",
@@ -59,12 +88,11 @@ HIGH_SIGNAL_KEYWORDS = {
 # 1. 환경 변수 세팅
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-TAVILY_API_KEY = os.environ.get('TAVILY_API_KEY')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')  # genai.Client()가 자동으로 인식하지만 명시적으로도 가져옵니다.
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 
 # 2. 클라이언트 초기화
 client = genai.Client(api_key=GEMINI_API_KEY)
-tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
 
 def is_noisy_domain(url):
@@ -108,89 +136,191 @@ def is_recent_release_date(value):
     earliest_allowed = today - timedelta(days=RECENT_DAYS)
     return earliest_allowed <= release_date <= today
 
-def get_tavily_news():
-    """Tavily API를 활용하여 최근 7일의 '발표/릴리즈/업데이트' 중심 뉴스만 수집합니다."""
+def parse_datetime_to_date(value):
+    if not value:
+        return "날짜 미상"
 
-    # 두루뭉술한 거시 트렌드 대신 '오늘 공개/발표/업데이트' 중심 쿼리로 제한
-    query_configs = [
-        {
-            "query": "AI companies announced today new model release OR API update OR product launch OR GA OR preview",
-            "include_domains": [
-                "openai.com",
-                "anthropic.com",
-                "blog.google",
-                "deepmind.google",
-                "mistral.ai",
-                "ai.meta.com",
-                "huggingface.co",
-                "cohere.com",
-                "stability.ai",
-            ],
-        },
-        {
-            "query": "GitHub release notes today LangChain LlamaIndex AutoGen CrewAI DSPy open source AI agent framework",
-            "include_domains": [
-                "github.com",
-                "docs.langchain.com",
-                "llamaindex.ai",
-                "microsoft.github.io",
-            ],
-        },
-        {
-            "query": "AI infra update today CUDA vLLM Ollama Ray Weights & Biases launch release notes",
-            "include_domains": [
-                "developer.nvidia.com",
-                "github.com",
-                "vllm.ai",
-                "ollama.com",
-                "wandb.ai",
-                "ray.io",
-            ],
-        },
-    ]
-    
+    text = str(value).strip()
+    if not text:
+        return "날짜 미상"
+
+    normalized = text.replace("Z", "+00:00")
+    for parser in (
+        lambda item: datetime.fromisoformat(item),
+        lambda item: datetime.strptime(item[:10], "%Y-%m-%d"),
+        lambda item: datetime.strptime(item, "%a, %d %b %Y %H:%M:%S %z"),
+        lambda item: datetime.strptime(item, "%a, %d %b %Y %H:%M:%S GMT"),
+    ):
+        try:
+            return parser(normalized).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return normalize_release_date(text)
+
+
+def normalize_item(category, source, title, url, summary, release_date):
+    normalized_date = normalize_release_date(release_date)
+    cleaned_summary = re.sub(r"\s+", " ", str(summary or "")).strip()
+    return {
+        "category": category,
+        "source": source,
+        "title": str(title or "").strip(),
+        "url": str(url or "").strip(),
+        "summary": cleaned_summary,
+        "release_date": normalized_date,
+    }
+
+
+def get_source_priority(source):
+    if source in SOURCE_PRIORITY:
+        return SOURCE_PRIORITY[source]
+    if str(source).startswith("GitHub:"):
+        return 1
+    return 2
+
+
+def normalize_title_key(title):
+    lowered = str(title or "").lower()
+    lowered = re.sub(r"https?://\S+", "", lowered)
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+    lowered = re.sub(r"\b(introducing|introduces|announcing|announced|release|released|launch|launched|preview|general availability|ga)\b", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
+
+
+def get_release_date_sort_value(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return datetime.min
+
+
+def collect_rss_news():
+    items = []
+
+    for category, source, feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                release_date = parse_datetime_to_date(
+                    entry.get("published") or entry.get("updated") or entry.get("pubDate")
+                )
+                url = entry.get("link", "")
+                summary = entry.get("summary", "") or entry.get("description", "")
+
+                item = normalize_item(
+                    category=category,
+                    source=source,
+                    title=entry.get("title", ""),
+                    url=url,
+                    summary=summary,
+                    release_date=release_date,
+                )
+
+                if not item["url"] or is_noisy_domain(item["url"]):
+                    continue
+                if not is_recent_release_date(item["release_date"]):
+                    continue
+                if not is_pinpoint_update(item["title"], item["summary"]):
+                    continue
+
+                items.append(item)
+
+            print(f"✅ RSS 수집 완료: {source}")
+        except Exception as e:
+            print(f"❌ RSS 수집 에러 ({source}): {e}")
+
+    return items
+
+
+def collect_github_releases():
+    items = []
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    for category, repo in GITHUB_RELEASE_REPOS:
+        api_url = f"https://api.github.com/repos/{repo}/releases?per_page=5"
+        try:
+            response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+
+            for release in response.json():
+                release_date = parse_datetime_to_date(release.get("published_at") or release.get("created_at"))
+                summary = release.get("body", "") or release.get("name", "")
+
+                item = normalize_item(
+                    category=category,
+                    source=f"GitHub:{repo}",
+                    title=release.get("name") or release.get("tag_name") or repo,
+                    url=release.get("html_url", ""),
+                    summary=summary,
+                    release_date=release_date,
+                )
+
+                if not item["url"] or is_noisy_domain(item["url"]):
+                    continue
+                if not is_recent_release_date(item["release_date"]):
+                    continue
+                if not is_pinpoint_update(item["title"], item["summary"]):
+                    continue
+
+                items.append(item)
+
+            print(f"✅ GitHub Releases 수집 완료: {repo}")
+        except Exception as e:
+            print(f"❌ GitHub Releases 수집 에러 ({repo}): {e}")
+
+    return items
+
+
+def format_news_items(items):
     collected_data = []
     seen_urls = set()
-    
-    for config in query_configs:
-        q = config["query"]
-        try:
-            response = tavily.search(
-                query=q,
-                search_depth="advanced",
-                topic="news",
-                days=RECENT_DAYS,
-                max_results=8,
-                include_domains=config["include_domains"],
+    seen_title_keys = set()
+
+    sorted_items = sorted(
+        items,
+        key=lambda current: (
+            get_release_date_sort_value(current["release_date"]),
+            -get_source_priority(current["source"]),
+        ),
+        reverse=True,
+    )
+
+    for item in sorted_items:
+        url = item["url"]
+        title_key = normalize_title_key(item["title"])
+        if url in seen_urls:
+            continue
+        if title_key and title_key in seen_title_keys:
+            continue
+        seen_urls.add(url)
+        if title_key:
+            seen_title_keys.add(title_key)
+        collected_data.append(
+            "\n".join(
+                [
+                    f"카테고리: {item['category']}",
+                    f"출처: {item['source']}",
+                    f"제목: {item['title']}",
+                    f"릴리즈 날짜: {item['release_date']}",
+                    f"링크: {item['url']}",
+                    f"본문 요약: {item['summary']}",
+                ]
             )
-            
-            for result in response.get('results', []):
-                title = result.get('title')
-                url = result.get('url')
-                content = result.get('content')
-                release_date = normalize_release_date(
-                    result.get('published_date') or result.get('published_at') or result.get('date')
-                )
+        )
 
-                if not url or url in seen_urls:
-                    continue
-                if is_noisy_domain(url):
-                    continue
-                if not is_pinpoint_update(title, content):
-                    continue
-                if not is_recent_release_date(release_date):
-                    continue
-
-                seen_urls.add(url)
-                collected_data.append(
-                    f"제목: {title}\n릴리즈 날짜: {release_date}\n링크: {url}\n본문 요약: {content}\n"
-                )
-                
-            print(f"✅ Tavily 검색 완료: '{q}'")
-        except Exception as e:
-            print(f"❌ Tavily 검색 에러 ({q}): {e}")
-            
     return "\n---\n".join(collected_data)
+
+
+def get_hybrid_news():
+    """RSS + GitHub Releases를 조합해 최근 발표/릴리즈 소스를 수집합니다."""
+    all_items = []
+    all_items.extend(collect_rss_news())
+    all_items.extend(collect_github_releases())
+    return format_news_items(all_items)
 
 def generate_curation_report(news_data):
     """수집된 뉴스를 바탕으로 Gemini가 구조화된 JSON 리포트를 생성합니다."""
@@ -199,7 +329,7 @@ def generate_curation_report(news_data):
 
     prompt = f"""
 너는 기업의 AI 플랫폼 도입과 전략을 담당하는 시니어 AI Project PM 및 AI 엔지니어야.
-아래는 Tavily 검색엔진을 통해 수집된 데일리 AI/IT 발표,이슈,릴리즈,업데이트 원문 데이터야.
+아래는 공식 RSS와 GitHub Releases를 통해 수집된 데일리 AI/IT 발표, 이슈, 릴리즈, 업데이트 원문 데이터야.
 이 내용들을 분석해서 반드시 JSON 객체 하나만 출력해.
 
 [수집된 데이터]
@@ -407,8 +537,8 @@ def send_telegram_message(text):
         response.raise_for_status()
 
 if __name__ == "__main__":
-    print("1. Tavily AI 뉴스 검색 시작...")
-    raw_news = get_tavily_news()
+    print("1. RSS + GitHub Releases 뉴스 수집 시작...")
+    raw_news = get_hybrid_news()
     
     if not raw_news.strip():
         print("수집된 뉴스가 없습니다. 프로세스를 종료합니다.")
