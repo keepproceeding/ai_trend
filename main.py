@@ -2,10 +2,12 @@ import os
 import re
 import html
 import json
+import time
 from datetime import datetime, timedelta
 import requests
 import feedparser
 from google import genai
+from google.genai import errors as genai_errors
 
 MAX_TELEGRAM_LENGTH = 4096
 RECENT_DAYS = 3
@@ -484,11 +486,23 @@ def generate_curation_report(news_data):
 }}}}
 """
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash', 
-        contents=prompt,
-    )
-    return response.text
+    max_retries = 4
+    base_delay = 30  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+            )
+            return response.text
+        except genai_errors.ServerError as e:
+            if e.status_code == 503 and attempt < max_retries - 1:
+                wait = base_delay * (2 ** attempt)
+                print(f"⚠️ Gemini 503 과부하, {wait}초 후 재시도 ({attempt + 1}/{max_retries - 1})...")
+                time.sleep(wait)
+            else:
+                raise
 
 
 def extract_json_object(text):
