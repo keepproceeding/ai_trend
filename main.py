@@ -467,21 +467,21 @@ def generate_curation_report(news_data):
 - agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
 [JSON 스키마]
-{{
+{{{{
   "date": "{today}",
   "headline_summary": ["핵심내용1", "핵심내용2"],
-    "market_pulse": {
+    "market_pulse": {{
         "level": "hot 또는 quiet",
         "reason": "판단 근거 1문장"
-    },
+    }},
   "business_updates": [
-        {"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}
+        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
   ],
   "technical_updates": [
-        {"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}
+        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
   ],
   "agent_insight": ["핵심인사이트 1문장"]
-}}
+}}}}
 """
 
     response = client.models.generate_content(
