@@ -19,6 +19,8 @@ RSS_FEEDS = [
     ("technical", "LangChain", "https://blog.langchain.dev/rss/"),
     ("technical", "LangGraph", "https://blog.langchain.dev/rss/"),
     ("technical", "LlamaIndex", "https://www.llamaindex.ai/blog/rss.xml"),
+    ("community", "Reddit r/localLLaMA", "https://www.reddit.com/r/localLLaMA/top.rss?t=day"),
+    ("community", "Reddit r/ClaudeAI", "https://www.reddit.com/r/ClaudeAI/top.rss?t=day"),
 ]
 
 GOOGLE_NEWS_RSS_FEEDS = [
@@ -461,23 +463,24 @@ def generate_curation_report(news_data):
 - 각 기사 설명은 '코멘트'가 아니라 핵심 요약 1줄(summary_one_line)만 작성.
 - 테크니컬 업데이트는 단순 버그 수정, 마이너 패치, 내부 리팩터링보다 새로운 기능, 에이전트 기능, 평가 방식, 벤치마크, 주요 라이브러리/서비스 업데이트를 우선 선택.
 - LangChain뿐 아니라 LangGraph, 에이전트 오케스트레이션, 에이전트 평가/observability 관련 업데이트가 있으면 우선 반영.
+- market_pulse 레벨 판정: OpenAI, Anthropic, Google DeepMind, Meta 등 주요 기업의 새 모델/주요 기능 발표(새 버전 출시, 주요 API 업데이트) OR 매우 영향력 높은 오픈소스 릴리즈(LangChain/LangGraph/CrewAI 등의 major version 업데이트)가 있을 때만 "hot"으로 판정. 그 외에는 "quiet"으로 설정. 커뮤니티 포스트만으로는 "hot"으로 판정하지 말 것.
 - agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
 [JSON 스키마]
 {{
   "date": "{today}",
-  "headline_summary": ["문장1", "문장2"],
-    "market_pulse": {{
+  "headline_summary": ["핵심내용1", "핵심내용2"],
+    "market_pulse": {
         "level": "hot 또는 quiet",
         "reason": "판단 근거 1문장"
-    }},
+    },
   "business_updates": [
-        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
+        {"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}
   ],
   "technical_updates": [
-        {{"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}}
+        {"title": "", "release_date": "YYYY-MM-DD 또는 날짜 미상", "url": "", "summary_one_line": ""}
   ],
-  "agent_insight": ["문단1", "문단2"]
+  "agent_insight": ["핵심인사이트 1문장"]
 }}
 """
 
@@ -518,70 +521,66 @@ def build_html_report(report):
 
     lines = [
         f"<b>📰 AI 테크 데일리 | {date}</b>",
-        "",
-        "<b>🔥 오늘의 AI 핵심 요약</b>",
     ]
 
-    if summary:
-        for item in summary[:3]:
-            lines.append(f"• {html.escape(str(item))}")
-    else:
-        lines.append("• 오늘은 유의미한 핀포인트 업데이트가 제한적입니다.")
-
-    lines.extend(["", "<b>📈 1. AI 비즈니스 & 플랫폼 발표, 이슈, 업데이트 사항</b>"])
-
-    if business:
-        for item in business[:6]:
-            title = html.escape(str(item.get("title", "제목 없음")))
-            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
-            url = str(item.get("url", "")).strip()
-            summary_one_line = html.escape(str(item.get("summary_one_line", "핵심 요약 없음")))
-
-            if url.startswith("http://") or url.startswith("https://"):
-                safe_url = html.escape(url, quote=True)
-                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
-            else:
-                lines.append(f"• {title}")
-            lines.append(f"└ 릴리즈 날짜: {release_date}")
-            lines.append(f"└ 핵심 요약: {summary_one_line}")
-            lines.append("")
-    else:
-        lines.append("• 수집된 비즈니스 업데이트가 없습니다.")
-
-    lines.extend(["", "<b>🛠️ 2. 테크니컬 이슈 & 오픈소스 발표, 이슈, 업데이트 사항</b>"])
-
-    if technical:
-        for item in technical[:6]:
-            title = html.escape(str(item.get("title", "제목 없음")))
-            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
-            url = str(item.get("url", "")).strip()
-            summary_one_line = html.escape(str(item.get("summary_one_line", "핵심 요약 없음")))
-
-            if url.startswith("http://") or url.startswith("https://"):
-                safe_url = html.escape(url, quote=True)
-                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
-            else:
-                lines.append(f"• {title}")
-            lines.append(f"└ 릴리즈 날짜: {release_date}")
-            lines.append(f"└ 핵심 요약: {summary_one_line}")
-            lines.append("")
-    else:
-        lines.append("• 수집된 테크니컬 업데이트가 없습니다.")
-
-    lines.extend(["", "<b>💡 에이전트의 인사이트</b>"])
+    # 시장 온도 먼저 표시
     pulse_raw = str(market_pulse.get("level", "unknown")).strip().lower()
     pulse_emoji = "🔥" if pulse_raw == "hot" else "🌿" if pulse_raw == "quiet" else "📊"
     pulse_level = html.escape(str(market_pulse.get("level", "unknown")))
     pulse_reason = html.escape(str(market_pulse.get("reason", "판단 근거 없음")))
-    lines.append(f"• 오늘의 온도: {pulse_emoji} {pulse_level}")
-    lines.append(f"• 판단 근거: {pulse_reason}")
+    lines.append(f"<b>온도: {pulse_emoji} {pulse_level}</b> | {pulse_reason}")
     lines.append("")
-    if insights:
-        for paragraph in insights[:2]:
-            lines.append(html.escape(str(paragraph)))
-            lines.append("")
+
+    # 핵심 요약 (축약)
+    if summary:
+        lines.append("<b>🔥 핵심 요약</b>")
+        for item in summary[:2]:
+            lines.append(f"• {html.escape(str(item))}")
+        lines.append("")
     else:
-        lines.append("오늘은 발표/릴리즈 중심으로 추적된 업데이트를 바탕으로 제한된 인사이트만 도출되었습니다.")
+        lines.append("<i>오늘은 주요 발표/릴리즈가 제한적입니다.</i>")
+        lines.append("")
+
+    # 비즈니스 업데이트 (축약)
+    if business:
+        lines.append("<b>📈 AI 플랫폼 업데이트</b>")
+        for item in business[:4]:
+            title = html.escape(str(item.get("title", "제목 없음")))
+            url = str(item.get("url", "")).strip()
+            summary_one_line = html.escape(str(item.get("summary_one_line", "")))
+
+            if url.startswith("http://") or url.startswith("https://"):
+                safe_url = html.escape(url, quote=True)
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+            else:
+                lines.append(f"• {title}")
+            if summary_one_line:
+                lines.append(f"  └ {summary_one_line}")
+        lines.append("")
+
+    # 테크니컬 업데이트 (축약)
+    if technical:
+        lines.append("<b>🛠️ 오픈소스 & 기술 업데이트</b>")
+        for item in technical[:4]:
+            title = html.escape(str(item.get("title", "제목 없음")))
+            url = str(item.get("url", "")).strip()
+            summary_one_line = html.escape(str(item.get("summary_one_line", "")))
+
+            if url.startswith("http://") or url.startswith("https://"):
+                safe_url = html.escape(url, quote=True)
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+            else:
+                lines.append(f"• {title}")
+            if summary_one_line:
+                lines.append(f"  └ {summary_one_line}")
+        lines.append("")
+
+    # 인사이트 (한 줄)
+    lines.append("<b>💡 인사이트</b>")
+    if insights:
+        lines.append(html.escape(str(insights[0])))
+    else:
+        lines.append("<i>세부 인사이트는 추후 업데이트 예정입니다.</i>")
 
     # HTML parse_mode에서도 줄바꿈(\n)이 렌더링되므로 분할 안정성을 위해 실제 줄바꿈을 사용
     return "\n".join(lines).strip()
