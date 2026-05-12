@@ -8,7 +8,7 @@ import feedparser
 from google import genai
 
 MAX_TELEGRAM_LENGTH = 4096
-RECENT_DAYS = 7
+RECENT_DAYS = 3
 REQUEST_TIMEOUT = 20
 
 RSS_FEEDS = [
@@ -546,14 +546,15 @@ def build_html_report(report):
         lines.append("<b>📈 AI 플랫폼 업데이트</b>")
         for item in business[:4]:
             title = html.escape(str(item.get("title", "제목 없음")))
+            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
             url = str(item.get("url", "")).strip()
             summary_one_line = html.escape(str(item.get("summary_one_line", "")))
 
             if url.startswith("http://") or url.startswith("https://"):
                 safe_url = html.escape(url, quote=True)
-                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a> <i>({release_date})</i>")
             else:
-                lines.append(f"• {title}")
+                lines.append(f"• {title} <i>({release_date})</i>")
             if summary_one_line:
                 lines.append(f"  └ {summary_one_line}")
         lines.append("")
@@ -563,14 +564,15 @@ def build_html_report(report):
         lines.append("<b>🛠️ 오픈소스 & 기술 업데이트</b>")
         for item in technical[:4]:
             title = html.escape(str(item.get("title", "제목 없음")))
+            release_date = html.escape(str(item.get("release_date", "날짜 미상")))
             url = str(item.get("url", "")).strip()
             summary_one_line = html.escape(str(item.get("summary_one_line", "")))
 
             if url.startswith("http://") or url.startswith("https://"):
                 safe_url = html.escape(url, quote=True)
-                lines.append(f"• <a href=\"{safe_url}\">{title}</a>")
+                lines.append(f"• <a href=\"{safe_url}\">{title}</a> <i>({release_date})</i>")
             else:
-                lines.append(f"• {title}")
+                lines.append(f"• {title} <i>({release_date})</i>")
             if summary_one_line:
                 lines.append(f"  └ {summary_one_line}")
         lines.append("")
