@@ -10,8 +10,8 @@ from google import genai
 from google.genai import errors as genai_errors
 
 MAX_TELEGRAM_LENGTH = 4096
-RECENT_DAYS = 3
-REQUEST_TIMEOUT = 20
+RECENT_DAYS = 2
+REQUEST_TIMEOUT = 30
 
 RSS_FEEDS = [
     ("business", "OpenAI", "https://openai.com/news/rss.xml"),
@@ -53,6 +53,36 @@ GITHUB_RELEASE_REPOS = [
     ("technical", "vllm-project/vllm"),
     ("technical", "ollama/ollama"),
 ]
+
+HF_PAPERS_API = "https://huggingface.co/api/daily_papers"
+HF_PAPERS_MIN_UPVOTES = 10  # 커뮤니티 upvote 최소 기준
+
+RESEARCH_TOPIC_KEYWORDS = {
+    # RAG / Retrieval
+    "rag", "retrieval-augmented", "retrieval augmented", "dense retrieval",
+    "hybrid retrieval", "reranking", "re-ranking", "graphrag", "graph rag",
+    "contextual retrieval", "chunk", "indexing strategy",
+    # KV Cache / Memory
+    "kv cache", "key-value cache", "kv compression", "attention cache",
+    "memory efficiency", "memory efficient", "memory optimization",
+    "context compression", "prompt compression", "token compression",
+    # TTFT / Inference Latency
+    "ttft", "time to first token", "prefill", "prefill latency",
+    "speculative decoding", "inference latency", "inference throughput",
+    "decode latency", "serving latency",
+    # Agent Loop / Harness Engineering
+    "agentic", "multi-agent", "tool use", "tool calling",
+    "reasoning loop", "self-correction", "self-reflection", "self-repair",
+    "chain-of-thought", "chain of thought", "react framework",
+    "agent harness", "evaluation harness", "agent scaffold",
+    "loop engineering", "trajectory optimization",
+    # Agent Evaluation / Benchmark
+    "agent benchmark", "agent evaluation", "agent accuracy",
+    "tool-use benchmark", "task completion",
+    # General Optimization
+    "flash attention", "long context", "rope scaling",
+    "quantization", "pruning", "distillation", "sparsity",
+}
 
 SOURCE_PRIORITY = {
     "OpenAI": 0,
@@ -181,6 +211,11 @@ def is_major_technical_update(title, content):
     has_high_signal = any(keyword in text for keyword in HIGH_SIGNAL_TECHNICAL_KEYWORDS)
     has_low_signal = any(keyword in text for keyword in LOW_SIGNAL_TECHNICAL_KEYWORDS)
     return has_high_signal and not has_low_signal
+
+
+def is_hot_research_paper(title, summary):
+    text = f"{title or ''} {summary or ''}".lower()
+    return any(keyword in text for keyword in RESEARCH_TOPIC_KEYWORDS)
 
 
 def normalize_release_date(value):
@@ -433,12 +468,59 @@ def format_news_items(items):
     return "\n---\n".join(collected_data)
 
 
+def collect_hf_papers():
+    """HuggingFace Daily Papers에서 커뮤니티 upvote를 받은 논문을 수집합니다."""
+    items = []
+    try:
+        response = requests.get(HF_PAPERS_API, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        papers = response.json()
+
+        count = 0
+        for entry in papers:
+            paper = entry.get("paper", {})
+            upvotes = paper.get("upvotes", 0)
+            if upvotes < HF_PAPERS_MIN_UPVOTES:
+                continue
+
+            arxiv_id = paper.get("id", "")
+            url = f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""
+            title = paper.get("title", "")
+            summary = paper.get("summary", "")
+            published_at = paper.get("publishedAt", "")
+            release_date = parse_datetime_to_date(published_at)
+
+            item = normalize_item(
+                category="research",
+                source=f"HuggingFace Papers (👍{upvotes})",
+                title=title,
+                url=url,
+                summary=summary,
+                release_date=release_date,
+            )
+
+            if not item["url"]:
+                continue
+            if not is_hot_research_paper(item["title"], item["summary"]):
+                continue
+
+            items.append(item)
+            count += 1
+
+        print(f"✅ HuggingFace Papers 수집 완료 ({count}건, upvotes ≥ {HF_PAPERS_MIN_UPVOTES})")
+    except Exception as e:
+        print(f"❌ HuggingFace Papers 수집 에러: {e}")
+
+    return items
+
+
 def get_hybrid_news():
-    """공식 RSS + GitHub Releases + Google News RSS를 조합해 최근 발표/릴리즈 소스를 수집합니다."""
+    """공식 RSS + GitHub Releases + Google News RSS + arXiv 논문을 조합해 수집합니다."""
     all_items = []
     all_items.extend(collect_rss_news())
     all_items.extend(collect_github_releases())
     all_items.extend(collect_google_news_rss())
+    all_items.extend(collect_hf_papers())
     return format_news_items(all_items)
 
 def generate_curation_report(news_data):
@@ -463,9 +545,14 @@ def generate_curation_report(news_data):
 - 각 기사에는 입력에 포함된 릴리즈 날짜를 그대로 넣고, 최근 {RECENT_DAYS}일 이내 항목만 사용.
 - 날짜가 없거나 최근 {RECENT_DAYS}일을 벗어나는 항목은 JSON에 포함하지 말 것.
 - 각 기사 설명은 '코멘트'가 아니라 핵심 요약 1줄(summary_one_line)만 작성.
+- headline_summary, summary_one_line, agent_insight, market_pulse.reason 등 모든 텍스트 필드는 "~했습니다", "~입니다", "~됩니다" 등 서술형 종결 금지. "OO 출시", "OO 업데이트", "OO 지원 추가" 등 명사형으로 끝낼 것.
 - 테크니컬 업데이트는 단순 버그 수정, 마이너 패치, 내부 리팩터링보다 새로운 기능, 에이전트 기능, 평가 방식, 벤치마크, 주요 라이브러리/서비스 업데이트를 우선 선택.
 - LangChain뿐 아니라 LangGraph, 에이전트 오케스트레이션, 에이전트 평가/observability 관련 업데이트가 있으면 우선 반영.
-- market_pulse 레벨 판정: OpenAI, Anthropic, Google DeepMind, Meta 등 주요 기업의 새 모델/주요 기능 발표(새 버전 출시, 주요 API 업데이트) OR 매우 영향력 높은 오픈소스 릴리즈(LangChain/LangGraph/CrewAI 등의 major version 업데이트)가 있을 때만 "hot"으로 판정. 그 외에는 "quiet"으로 설정. 커뮤니티 포스트만으로는 "hot"으로 판정하지 말 것.
+- technical_updates에는 오픈소스 릴리즈 외에 HuggingFace Papers 커뮤니티 upvote를 받은 논문도 포함할 수 있음. RAG/RASG, KV 캐시 최적화, TTFT/추론 지연 개선, 메모리 효율화, 에이전트 루프 엔지니어링, 하네스 엔지니어링, 에이전트 정확도·성능 향상 관련 논문이 있으면 최대 2건까지 우선 선택. 논문 항목의 title에는 "[논문]" 접두어를 붙일 것.
+- market_pulse 레벨 판정: 아래 조건을 모두 충족할 때만 "hot". 하나라도 빠지면 "quiet".
+  (1) OpenAI, Anthropic, Google DeepMind, Meta 중 한 곳 이상이 주체일 것.
+  (2) 완전히 새로운 frontier 모델 출시(예: GPT-5, Claude 4, Gemini 3 등 신규 시리즈) OR 산업 전반에 즉각적 영향을 주는 플랫폼급 발표일 것.
+  (3) 단순 API 업데이트, 기존 모델 마이너 버전, 가격 변경, 오픈소스 릴리즈, 연구 논문, 기능 추가, 툴 출시는 아무리 주목받아도 "hot" 불가. 반드시 "quiet".
 - agent_insight에는 오늘 동향이 "hot"인지 "quiet"인지와 그 판단 이유를 함께 포함.
 
 [JSON 스키마]
